@@ -1,0 +1,14 @@
+reddit = {
+	'subreddits': ['firstsubreddit','secondsubreddit'],
+	'username': 'bot_username_here',
+	'password': 'bot_password_here'
+}
+google = {
+	'oauth2': {
+		'client_id': '[Your App Client ID Here]',
+		'client_secret': '[Your App Client Secret Here]'
+	},
+	'youtube': {
+		'playlist_id': '[Playlist ID that bot will add videos to]'
+	}
+}
