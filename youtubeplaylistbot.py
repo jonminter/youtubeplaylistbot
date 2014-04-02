@@ -1,30 +1,52 @@
 # YouTube Playlist Bot
 # Maintains a YouTube playlist that contains all submissions to a set of sub-reddits that are YouTube links
 
+
+"""YouTube Playlist Reddit Bot
+Usage:
+  $ python youtubeplaylistbot.py
+
+You can also get help on all the command-line flags the program understands
+by running:
+
+  $ python youtubeplaylistbot.py --help
+
+"""
+
 __author__ = 'Jon Minter (jdiminter@gmail.com)'
 __version__ = '1.0a'
 
-import os
-import sys
 import time
+import datetime
 import sqlite3
 import praw
-import gdata.gauth
-import gdata.youtube
-import gdata.youtube.service
 import logging
 import settings
 import urllib
 from pprint import pprint
 import re
+import httplib
+
+import argparse
+import httplib2
+import os
+import sys
+
+import apiclient.errors
+from apiclient import discovery
+from oauth2client import file
+from oauth2client import client
+from oauth2client import tools
 
 SCRIPT_NAME = os.path.basename(__file__)
 SQLITE_FILENAME = 'youtubeplaylistbot.db'
 SQLITE_CREATE_SCHEMA_TEST = "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='reddit_submissions_processed'"
 REDDIT_USER_AGENT = 'YoutubePlaylistBot by /u/codeninja84 v 1.0a https://github.com/jonminter/youtubeplaylistbot'
+REDDIT_PLAY_CATCHUP = False
 REDDIT_SUBMISSION_CATCHUP_LIMIT = 1000
 REDDIT_SUBMISSION_LIMIT = 100
 REDDIT_SUBMISSION_YOUTUBE_MEDIA_TYPE = 'youtube.com'
+REDDIT_SLEEP_INTERVAL = 120
 GOOGLE_USER_AGENT = 'Reddit YoutubePlaylistBot'
 GOOGLE_OAUTH_URL = 'https://accounts.google.com/o/oauth2/auth'
 GOOGLE_OAUTH_REDIRECT_URI = 'urn:ietf:wg:oauth:2.0:oob'
@@ -52,46 +74,25 @@ def get_db_connection():
 		db_cursor.executescript(sql_schema)
 	return db_connection
 
-# Retrieves a session auth token for GData services
-def get_gdata_auth_token():
-	token = gdata.gauth.OAuth2Token(
-		client_id=settings.google['oauth2']['client_id'],
-		client_secret=settings.google['oauth2']['client_secret'], 
-		scope=GOOGLE_OAUTH_SCOPE,
-		user_agent='application-name-goes-here')
-	return token
-
-def get_gdata_saved_auth_token(db_connection):
-	sql_result = db_connection.execute('SELECT value FROM config_variables WHERE name=?', (GOOGLE_OAUTH_TOKEN_VARIABLE,))
-	token_row = sql_result.fetchone()
-	if token_row is None:
-		raise Exception('No auth token stored')
-	token = gdata.gauth.token_from_blob(token_row[0])
-	return token
-
-# Retrieves an instance of the YouTube Data API service object
-def get_youtube_service(auth_token):
-	yt_service = gdata.youtube.service.YouTubeService()
-	yt_service.ssl = True
-	auth_token.authorize(yt_service)
-	return yt_service
-
 # Adds the specified video to the playlist using the YouTube Data API object
 def add_video_to_playlist(yt_service, playlist_id, video_id):
-	add_video_request=yt_service.playlistItems().insert(
-		part="snippet",
-		body={
-			'snippet': {
-				'playlistId': playlist_id, 
-				'resourceId': {
-					'kind': 'youtube#video',
-					'videoId': video_id
+	try:
+		add_video_request=yt_service.playlistItems().insert(
+			part="snippet",
+			body={
+				'snippet': {
+					'playlistId': playlist_id, 
+					'resourceId': {
+						'kind': 'youtube#video',
+						'videoId': video_id
+					}
+					#'position': 0
 				}
-				#'position': 0
 			}
-		}
-	).execute()
-	return add_video_request
+		).execute()
+		return add_video_request
+	except (IOError,httplib.HTTPException,apiclient.errors.HttpError) as e:
+		logging.warning("Http error occurred when trying to add video '" + video_id + "' to playlist '" + playlist_id + "'. Message: " + str(e))
 
 # Parses a YouTube URL and retrieves the Video ID from that URL.
 # Uses a set of regular expressions to parse many different forms of YouTube video URLs.
@@ -104,20 +105,24 @@ def get_youtube_video_id_from_url(url):
 # Method to run the logic for the bot. Connects to the Reddit API and periodically polls the API to get the latest submissions to the subreddits
 # that the bot is watching. It loops through those submissions and for the ones that have not been processed yet if they are links to youtube
 # it adds the videos to a playlist.
-def run_bot(args):
+def run_bot(yt_service):
 	db_connection = get_db_connection()
-	auth_token = get_gdata_saved_auth_token(db_connection)
-	yt_service = get_youtube_service(auth_token)
+	db_cursor = db_connection.cursor()
 	r = praw.Reddit(REDDIT_USER_AGENT)
 	r.login(settings.reddit['username'], settings.reddit['password'])
+	first_pass = True
+	play_catchup = REDDIT_PLAY_CATCHUP
 	while True:
+		pass_start_time = time.time()
 		multireddit = '+'.join(settings.reddit['subreddits'])
 		subreddit = r.get_subreddit(multireddit)
-		for submission in subreddit.get_new(limit=100):
+		current_pull_limit = REDDIT_SUBMISSION_CATCHUP_LIMIT if first_pass and play_catchup else REDDIT_SUBMISSION_LIMIT
+		first_pass = False
+		for submission in subreddit.get_new(limit=current_pull_limit):
+			logging.debug('Submission -> ID: ' + submission.id + ', URL: ' + submission.url)
+			sql_result = db_cursor.execute('SELECT COUNT(submission_id) FROM reddit_submissions_processed WHERE submission_id = ?', [submission.id])
+			submission_processed = db_cursor.fetchone()
 			
-			sql_result = db_connection.execute('SELECT COUNT(submission_id) FROM reddit_submissions_processed WHERE submission_id = ?', (submission.id,))
-			submission_processed = sql_result.fetchone()
-			logging.debug('Submission URL: ' + submission.url)
 			if submission_processed[0] == 0:
 				logging.debug('Submission not processed yet')
 				if submission.media:
@@ -129,54 +134,88 @@ def run_bot(args):
 							add_video_to_playlist(yt_service, settings.google['youtube']['playlist_id'], youtube_video_id)
 				else:
 					logging.debug('No media attribute')
+				db_cursor.execute("INSERT INTO reddit_submissions_processed (submission_id, url) values (?,?)", (submission.id, submission.url))
+				db_connection.commit()
+			else:
+				logging.debug('Submission already processed')
 
-				#db_connection.execute("INSERT INTO reddit_submissions_processed (submission_id, url) values (?,?)", (submission.id, submission.url))
-		#db_connection.commit()
-
-		time.sleep(1800)
-
-# Returns a URL to use to get a long lived OAuth2 token from Google's authentication web services
-def print_youtube_oauth2_url(args):
-	token = get_gdata_auth_token()
-	oauth2_url = token.generate_authorize_url(redirect_uri=GOOGLE_OAUTH_REDIRECT_URI)
-	print oauth2_url
-
-def store_auth_token(args):
-	token = get_gdata_auth_token()
-
-	if len(args) >= 2:
-		code = args[2]
-		token.redirect_uri = GOOGLE_OAUTH_REDIRECT_URI
-		token.get_access_token(code)
-		token_blob = gdata.gauth.token_to_blob(token)
-
-		db_connection = get_db_connection()
-		db_connection.execute('INSERT INTO config_variables (name, value) values (?,?)', (GOOGLE_OAUTH_TOKEN_VARIABLE, token_blob))
-		db_connection.commit()
-	else:
-		print "Requires a 2nd argument with the authentication code from google, i.e. 'python youtubeplaylistbot.py set_auth_code [CODE GOES HERE]"
-
-def print_help(args):
-	print "Takes one command line argument: runbot or authenticate"
+		pass_total_time = time.time() - pass_start_time
+		logging.debug('Pass through last ' + str(current_pull_limit) + ' submissions took ' + str(datetime.timedelta(seconds=pass_total_time)))
+		time.sleep(REDDIT_SLEEP_INTERVAL)
 
 
-# Main logic for program
+# Setup logging
 logging.basicConfig(filename=SCRIPT_NAME + '.log',level=settings.logging['level'])
 logger = logging.getLogger()
 logger.disabled = settings.logging['disabled']
 
-commandMap = {
-	'runbot': run_bot,
-	'get_auth_url': print_youtube_oauth2_url,
-	'set_auth_code': store_auth_token,
-	'help': print_help,
-}
-if len(sys.argv) > 1:
-	command = sys.argv[1].strip()
-	try:
-		commandMap[command](sys.argv)
-	except KeyError:
-		print "Invalid argument '" + command + "'"
-		print_help([])
-else:
-	print_help([])
+# Parser for command-line arguments.
+parser = argparse.ArgumentParser(
+    description=__doc__,
+    formatter_class=argparse.RawDescriptionHelpFormatter,
+    parents=[tools.argparser])
+
+
+# CLIENT_SECRETS is name of a file containing the OAuth 2.0 information for this
+# application, including client_id and client_secret. You can see the Client ID
+# and Client secret on the APIs page in the Cloud Console:
+# <https://cloud.google.com/console#/project/233647656699/apiui>
+CLIENT_SECRETS = os.path.join(os.path.dirname(__file__), 'client_secrets.json')
+
+# Set up a Flow object to be used for authentication.
+# Add one or more of the following scopes. PLEASE ONLY ADD THE SCOPES YOU
+# NEED. For more information on using scopes please see
+# <https://developers.google.com/+/best-practices>.
+FLOW = client.flow_from_clientsecrets(CLIENT_SECRETS,
+  scope=[
+      'https://www.googleapis.com/auth/youtube',
+      'https://www.googleapis.com/auth/youtube.readonly',
+      'https://www.googleapis.com/auth/youtube.upload',
+      'https://www.googleapis.com/auth/youtubepartner',
+      'https://www.googleapis.com/auth/youtubepartner-channel-audit',
+    ],
+    message=tools.message_if_missing(CLIENT_SECRETS))
+
+
+def main(argv):
+  # Parse the command-line flags.
+  flags = parser.parse_args(argv[1:])
+
+  # If the credentials don't exist or are invalid run through the native client
+  # flow. The Storage object will ensure that if successful the good
+  # credentials will get written back to the file.
+  storage = file.Storage('youtubeplaylistbot_credentials.dat')
+  credentials = storage.get()
+  if credentials is None or credentials.invalid:
+    credentials = tools.run_flow(FLOW, storage, flags)
+
+  # Create an httplib2.Http object to handle our HTTP requests and authorize it
+  # with our good Credentials.
+  http = httplib2.Http()
+  http = credentials.authorize(http)
+
+  # Construct the service object for the interacting with the YouTube Data API.
+  service = discovery.build('youtube', 'v3', http=http)
+
+  try:
+    run_bot(service)
+
+  except client.AccessTokenRefreshError:
+    print ("The credentials have been revoked or expired, please re-run"
+      "the application to re-authorize")
+
+
+# For more information on the YouTube Data API you can visit:
+#
+#   https://developers.google.com/youtube/v3
+#
+# For more information on the YouTube Data API Python library surface you
+# can visit:
+#
+#   https://developers.google.com/resources/api-libraries/documentation/youtube/v3/python/latest/
+#
+# For information on the Python Client Library visit:
+#
+#   https://developers.google.com/api-client-library/python/start/get_started
+if __name__ == '__main__':
+  main(sys.argv)
