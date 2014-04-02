@@ -5,4 +5,4 @@ Reddit Bot to Maintain a Youtube Playlist of All Youtube Video submissions to a 
 
 Requires the following python libraries to be installed:
 - PRAW (praw)
-- Google Data Library (gdata)
+- Google API Python Client (google-api-python-client)
