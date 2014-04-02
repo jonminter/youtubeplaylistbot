@@ -125,15 +125,12 @@ def run_bot(yt_service):
 			
 			if submission_processed[0] == 0:
 				logging.debug('Submission not processed yet')
-				if submission.media:
-					logging.debug('Media Type: ' + submission.media['type'])
-					if submission.media['type'] == REDDIT_SUBMISSION_YOUTUBE_MEDIA_TYPE:
-						youtube_video_id = get_youtube_video_id_from_url(submission.url)
-						logging.debug('YouTube Video ID: ' + youtube_video_id)
-						if youtube_video_id:
-							add_video_to_playlist(yt_service, settings.google['youtube']['playlist_id'], youtube_video_id)
+				youtube_video_id = get_youtube_video_id_from_url(submission.url)
+				if youtube_video_id:
+					logging.debug('YouTube Video ID: ' + youtube_video_id)
+					add_video_to_playlist(yt_service, settings.google['youtube']['playlist_id'], youtube_video_id)
 				else:
-					logging.debug('No media attribute')
+					logging.debug('Not a YouTube link')
 				db_cursor.execute("INSERT INTO reddit_submissions_processed (submission_id, url) values (?,?)", (submission.id, submission.url))
 				db_connection.commit()
 			else:
