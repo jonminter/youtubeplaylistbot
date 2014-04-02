@@ -1,3 +1,7 @@
+logging = {
+	'disabled': False,
+	'level': logging.WARNING
+}
 reddit = {
 	'subreddits': ['firstsubreddit','secondsubreddit'],
 	'username': 'bot_username_here',

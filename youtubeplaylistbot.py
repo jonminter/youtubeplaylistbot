@@ -12,13 +12,14 @@ import praw
 import gdata.gauth
 import gdata.youtube
 import gdata.youtube.service
+import logging
 import settings
 import urllib
 from pprint import pprint
 import re
 
 SCRIPT_NAME = os.path.basename(__file__)
-SQLITE_FILENAME = 'youtubeplaylistbot.db',
+SQLITE_FILENAME = 'youtubeplaylistbot.db'
 SQLITE_CREATE_SCHEMA_TEST = "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='reddit_submissions_processed'"
 REDDIT_USER_AGENT = 'YoutubePlaylistBot by /u/codeninja84 v 1.0a https://github.com/jonminter/youtubeplaylistbot'
 REDDIT_SUBMISSION_CATCHUP_LIMIT = 1000
@@ -77,8 +78,7 @@ def get_youtube_service(auth_token):
 
 # Adds the specified video to the playlist using the YouTube Data API object
 def add_video_to_playlist(yt_service, playlist_id, video_id):
-	pprint(yt_service)
-	add_video_request=yt_service.playlistItems.insert(
+	add_video_request=yt_service.playlistItems().insert(
 		part="snippet",
 		body={
 			'snippet': {
@@ -98,9 +98,6 @@ def add_video_to_playlist(yt_service, playlist_id, video_id):
 def get_youtube_video_id_from_url(url):
 	for regex in YOUTUBE_VIDEO_ID_REGEX_LIST:
 		match = regex.search(url)
-		pprint(url)
-		pprint(regex)
-		pprint(match)
 		if match:
 			return match.group('video_id')
 
@@ -111,10 +108,8 @@ def run_bot(args):
 	db_connection = get_db_connection()
 	auth_token = get_gdata_saved_auth_token(db_connection)
 	yt_service = get_youtube_service(auth_token)
-	print "About to login to reddit!"
 	r = praw.Reddit(REDDIT_USER_AGENT)
 	r.login(settings.reddit['username'], settings.reddit['password'])
-	print "Logged into reddit!"
 	while True:
 		multireddit = '+'.join(settings.reddit['subreddits'])
 		subreddit = r.get_subreddit(multireddit)
@@ -122,18 +117,18 @@ def run_bot(args):
 			
 			sql_result = db_connection.execute('SELECT COUNT(submission_id) FROM reddit_submissions_processed WHERE submission_id = ?', (submission.id,))
 			submission_processed = sql_result.fetchone()
-			print submission.url
+			logging.debug('Submission URL: ' + submission.url)
 			if submission_processed[0] == 0:
-				print 'Submission not processed'
+				logging.debug('Submission not processed yet')
 				if submission.media:
-					print submission.media['type']
+					logging.debug('Media Type: ' + submission.media['type'])
 					if submission.media['type'] == REDDIT_SUBMISSION_YOUTUBE_MEDIA_TYPE:
 						youtube_video_id = get_youtube_video_id_from_url(submission.url)
-						print 'YouTube Video ID: ', youtube_video_id
+						logging.debug('YouTube Video ID: ' + youtube_video_id)
 						if youtube_video_id:
 							add_video_to_playlist(yt_service, settings.google['youtube']['playlist_id'], youtube_video_id)
 				else:
-					print 'No media attribute'
+					logging.debug('No media attribute')
 
 				#db_connection.execute("INSERT INTO reddit_submissions_processed (submission_id, url) values (?,?)", (submission.id, submission.url))
 		#db_connection.commit()
@@ -166,6 +161,10 @@ def print_help(args):
 
 
 # Main logic for program
+logging.basicConfig(filename=SCRIPT_NAME + '.log',level=settings.logging['level'])
+logger = logging.getLogger()
+logger.disabled = settings.logging['disabled']
+
 commandMap = {
 	'runbot': run_bot,
 	'get_auth_url': print_youtube_oauth2_url,
@@ -177,7 +176,7 @@ if len(sys.argv) > 1:
 	try:
 		commandMap[command](sys.argv)
 	except KeyError:
-		print ''.join(["Invalid argument '", command, "'"])
+		print "Invalid argument '" + command + "'"
 		print_help([])
 else:
 	print_help([])
