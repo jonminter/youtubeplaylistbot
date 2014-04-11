@@ -31,6 +31,7 @@ import argparse
 import httplib2
 import os
 import sys
+import requests.exceptions
 
 import apiclient.errors
 from apiclient import discovery
@@ -45,8 +46,9 @@ REDDIT_USER_AGENT = 'YoutubePlaylistBot by /u/codeninja84 v 1.0a https://github.
 REDDIT_PLAY_CATCHUP = False
 REDDIT_SUBMISSION_CATCHUP_LIMIT = 1000
 REDDIT_SUBMISSION_LIMIT = 100
-REDDIT_SUBMISSION_YOUTUBE_MEDIA_TYPE = 'youtube.com'
+REDDIT_SUBMISSION_GET_TRY_LIMIT = 10
 REDDIT_SLEEP_INTERVAL = 120
+REDDIT_SLEEP_MAX_INTERVAL = 3600
 GOOGLE_USER_AGENT = 'Reddit YoutubePlaylistBot'
 GOOGLE_OAUTH_URL = 'https://accounts.google.com/o/oauth2/auth'
 GOOGLE_OAUTH_REDIRECT_URI = 'urn:ietf:wg:oauth:2.0:oob'
@@ -93,6 +95,7 @@ def add_video_to_playlist(yt_service, playlist_id, video_id):
 		return add_video_request
 	except (IOError,httplib.HTTPException,apiclient.errors.HttpError) as e:
 		logging.warning("Http error occurred when trying to add video '" + video_id + "' to playlist '" + playlist_id + "'. Message: " + str(e))
+		return False
 
 # Parses a YouTube URL and retrieves the Video ID from that URL.
 # Uses a set of regular expressions to parse many different forms of YouTube video URLs.
@@ -112,33 +115,54 @@ def run_bot(yt_service):
 	r.login(settings.reddit['username'], settings.reddit['password'])
 	first_pass = True
 	play_catchup = REDDIT_PLAY_CATCHUP
+	current_sleep_interval = REDDIT_SLEEP_INTERVAL
 	while True:
 		pass_start_time = time.time()
 		multireddit = '+'.join(settings.reddit['subreddits'])
 		subreddit = r.get_subreddit(multireddit)
 		current_pull_limit = REDDIT_SUBMISSION_CATCHUP_LIMIT if first_pass and play_catchup else REDDIT_SUBMISSION_LIMIT
 		first_pass = False
-		for submission in subreddit.get_new(limit=current_pull_limit):
-			logging.debug('Submission -> ID: ' + submission.id + ', URL: ' + submission.url)
-			sql_result = db_cursor.execute('SELECT COUNT(submission_id) FROM reddit_submissions_processed WHERE submission_id = ?', [submission.id])
-			submission_processed = db_cursor.fetchone()
-			
-			if submission_processed[0] == 0:
-				logging.debug('Submission not processed yet')
-				youtube_video_id = get_youtube_video_id_from_url(submission.url)
-				if youtube_video_id:
-					logging.debug('YouTube Video ID: ' + youtube_video_id)
-					add_video_to_playlist(yt_service, settings.google['youtube']['playlist_id'], youtube_video_id)
+
+		try:
+			for submission in subreddit.get_new(limit=current_pull_limit):
+				# make sure the sleep interval is reset since we have a successful request
+				current_sleep_interval = REDDIT_SLEEP_INTERVAL
+
+				logging.debug('Submission -> ID: ' + submission.id + ', URL: ' + submission.url)
+				sql_result = db_cursor.execute('SELECT COUNT(submission_id) FROM reddit_submissions_processed WHERE submission_id = ?', [submission.id])
+				submission_processed = db_cursor.fetchone()
+				
+				if submission_processed[0] == 0:
+					logging.debug('Submission not processed yet')
+					is_youtube_link = False
+					youtube_video_id = get_youtube_video_id_from_url(submission.url)
+					add_video_success = False
+					if youtube_video_id:
+						is_youtube_link = True
+						logging.debug('YouTube Video ID: ' + youtube_video_id)
+						add_video_result = add_video_to_playlist(yt_service, settings.google['youtube']['playlist_id'], youtube_video_id)
+						logging.debug('Add video result = ' + str(add_video_result));
+						if add_video_result != False:
+							add_video_success = True
+					else:
+						logging.debug('Not a YouTube link')
+					if is_youtube_link == False or add_video_success == True:
+						db_cursor.execute("INSERT INTO reddit_submissions_processed (submission_id, url) values (?,?)", (submission.id, submission.url))
+					db_connection.commit()
 				else:
-					logging.debug('Not a YouTube link')
-				db_cursor.execute("INSERT INTO reddit_submissions_processed (submission_id, url) values (?,?)", (submission.id, submission.url))
-				db_connection.commit()
-			else:
-				logging.debug('Submission already processed')
+					logging.debug('Submission already processed')
+		except requests.exceptions.HTTPError as e:
+			logging.error('HTTP error occurred trying to load reddit submissions: ' + str(e))
+			# double the wait time every time we get an HTTP error until we hit the max wait interval
+			# to prevent from continuing to hit the server frequently if it's down or busy
+			# sleep interval will reset with a successful query
+			if current_sleep_interval < REDDIT_SLEEP_MAX_INTERVAL:
+				current_sleep_interval += current_sleep_interval
+			logging.debug('Waiting ' + str(datetime.timedelta(seconds=current_sleep_interval)) + ' to try next request')
 
 		pass_total_time = time.time() - pass_start_time
 		logging.debug('Pass through last ' + str(current_pull_limit) + ' submissions took ' + str(datetime.timedelta(seconds=pass_total_time)))
-		time.sleep(REDDIT_SLEEP_INTERVAL)
+		time.sleep(current_sleep_interval)
 
 
 # Setup logging
