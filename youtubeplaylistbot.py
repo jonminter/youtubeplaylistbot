@@ -23,6 +23,7 @@ import praw
 import logging
 import settings
 import urllib
+import socket
 from pprint import pprint
 import re
 import httplib
@@ -151,7 +152,7 @@ def run_bot(yt_service):
 					db_connection.commit()
 				else:
 					logging.debug('Submission already processed')
-		except requests.exceptions.HTTPError as e:
+		except (socket.error, requests.exceptions.HTTPError) as e:
 			logging.error('HTTP error occurred trying to load reddit submissions: ' + str(e))
 			# double the wait time every time we get an HTTP error until we hit the max wait interval
 			# to prevent from continuing to hit the server frequently if it's down or busy
