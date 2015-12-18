@@ -43,7 +43,7 @@ from oauth2client import tools
 SCRIPT_NAME = os.path.basename(__file__)
 SQLITE_FILENAME = 'youtubeplaylistbot.db'
 SQLITE_CREATE_SCHEMA_TEST = "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='reddit_submissions_processed'"
-REDDIT_USER_AGENT = 'YoutubePlaylistBot by /u/codeninja84 v 1.0a https://github.com/jonminter/youtubeplaylistbot'
+REDDIT_USER_AGENT = 'YoutubePlaylistBot by /u/jonmdev v 1.0a https://github.com/jonminter/youtubeplaylistbot'
 REDDIT_PLAY_CATCHUP = False
 REDDIT_SUBMISSION_CATCHUP_LIMIT = 1000
 REDDIT_SUBMISSION_LIMIT = 100
